@@ -5,6 +5,9 @@ import android.content.Context;
 import android.database.Cursor;
 import android.database.sqlite.SQLiteDatabase;
 import android.database.sqlite.SQLiteOpenHelper;
+import com.example.myapplication.model.AttendanceRecord;
+import java.util.HashMap;
+import java.util.Map;
 
 import com.example.myapplication.model.Student;
 
@@ -164,5 +167,73 @@ public class DatabaseHelper extends SQLiteOpenHelper {
         } finally {
             db.endTransaction();
         }
+    }
+
+        // ---------- History / Sync ----------
+    public List<AttendanceRecord> getStudentHistory(long studentId) {
+        List<AttendanceRecord> list = new ArrayList<>();
+        String sql = "SELECT s.roll, a.date, a.present FROM attendance a " +
+                "INNER JOIN students s ON s.id = a.student_id " +
+                "WHERE a.student_id=? ORDER BY a.date DESC";
+        try (Cursor c = getReadableDatabase().rawQuery(sql, new String[]{String.valueOf(studentId)})) {
+            while (c.moveToNext()) {
+                list.add(new AttendanceRecord(c.getString(0), c.getString(1), c.getInt(2) == 1));
+            }
+        }
+        return list;
+    }
+
+    public List<AttendanceRecord> getAllAttendance(long userId) {
+        List<AttendanceRecord> list = new ArrayList<>();
+        String sql = "SELECT s.roll, a.date, a.present FROM attendance a " +
+                "INNER JOIN students s ON s.id = a.student_id WHERE s.user_id=?";
+        try (Cursor c = getReadableDatabase().rawQuery(sql, new String[]{String.valueOf(userId)})) {
+            while (c.moveToNext()) {
+                list.add(new AttendanceRecord(c.getString(0), c.getString(1), c.getInt(2) == 1));
+            }
+        }
+        return list;
+    }
+
+    /** Merge cloud data into local DB (insert new, update existing). */
+    public void restoreFromCloud(long userId, List<Student> students, List<AttendanceRecord> records) {
+        SQLiteDatabase db = getWritableDatabase();
+        db.beginTransaction();
+        try {
+            Map<String, Long> ids = new HashMap<>();
+            for (Student s : students) {
+                ids.put(s.roll, upsertStudent(db, userId, s.roll, s.name));
+            }
+            for (AttendanceRecord r : records) {
+                Long sid = ids.get(r.roll);
+                if (sid == null) continue;
+                ContentValues cv = new ContentValues();
+                cv.put("student_id", sid);
+                cv.put("date", r.date);
+                cv.put("present", r.present ? 1 : 0);
+                db.insertWithOnConflict("attendance", null, cv, SQLiteDatabase.CONFLICT_REPLACE);
+            }
+            db.setTransactionSuccessful();
+        } finally {
+            db.endTransaction();
+        }
+    }
+
+    private long upsertStudent(SQLiteDatabase db, long userId, String roll, String name) {
+        try (Cursor c = db.rawQuery("SELECT id FROM students WHERE user_id=? AND roll=?",
+                new String[]{String.valueOf(userId), roll})) {
+            if (c.moveToFirst()) {
+                long id = c.getLong(0);
+                ContentValues up = new ContentValues();
+                up.put("name", name);
+                db.update("students", up, "id=?", new String[]{String.valueOf(id)});
+                return id;
+            }
+        }
+        ContentValues cv = new ContentValues();
+        cv.put("user_id", userId);
+        cv.put("roll", roll);
+        cv.put("name", name);
+        return db.insert("students", null, cv);
     }
 }
